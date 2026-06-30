@@ -1,0 +1,365 @@
+import { useEffect, useState, type FormEvent } from "react";
+import { PageHeader } from "../components/PageHeader";
+import { StatusPanel } from "../components/StatusPanel";
+import { useAuth } from "../hooks/useAuth";
+import { bookingService } from "../services/bookingService";
+import type { Booking } from "../types/models";
+import { formatDateTimeInput } from "../utils/date";
+import { canDeleteResources, canEditBooking } from "../utils/permissions";
+
+interface BookingFormState {
+  title: string;
+  description: string;
+  startsAt: string;
+  endsAt: string;
+}
+
+const buildBookingFormState = (booking: Booking): BookingFormState => ({
+  title: booking.title,
+  description: booking.description,
+  startsAt: formatDateTimeInput(booking.startsAt),
+  endsAt: formatDateTimeInput(booking.endsAt),
+});
+
+const validateBookingFormState = (
+  formState: BookingFormState,
+): string | null => {
+  if (!formState.startsAt || !formState.endsAt) {
+    return "Start and end times are required.";
+  }
+
+  const startsAtTime = new Date(formState.startsAt).getTime();
+  if (Number.isNaN(startsAtTime)) {
+    return "Invalid start time format.";
+  }
+
+  const endsAtTime = new Date(formState.endsAt).getTime();
+  if (Number.isNaN(endsAtTime)) {
+    return "Invalid end time format.";
+  }
+
+  if (endsAtTime <= startsAtTime) {
+    return "End time must be after start time.";
+  }
+
+  return null;
+};
+
+export const BookingsPage = () => {
+  const { isFeatureEnabled, user } = useAuth();
+  const [bookings, setBookings] = useState<Booking[]>([]);
+  const [bookingEdits, setBookingEdits] = useState<
+    Record<string, BookingFormState>
+  >({});
+  const [createState, setCreateState] = useState<BookingFormState>({
+    title: "",
+    description: "",
+    startsAt: "",
+    endsAt: "",
+  });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const loadBookings = async () => {
+      if (!isFeatureEnabled("scheduling")) {
+        setLoading(false);
+        return;
+      }
+
+      setLoading(true);
+      setError(null);
+
+      try {
+        const nextBookings = await bookingService.list();
+        setBookings(nextBookings);
+        setBookingEdits(
+          Object.fromEntries(
+            nextBookings.map((booking) => [
+              booking._id,
+              buildBookingFormState(booking),
+            ]),
+          ),
+        );
+      } catch (loadError) {
+        setError(
+          loadError instanceof Error
+            ? loadError.message
+            : "Unable to load bookings",
+        );
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    void loadBookings();
+  }, [isFeatureEnabled]);
+
+  const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError(null);
+
+    const validationError = validateBookingFormState(createState);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
+    try {
+      const booking = await bookingService.create(createState);
+      setBookings((current) =>
+        [...current, booking].sort((left, right) =>
+          left.startsAt.localeCompare(right.startsAt),
+        ),
+      );
+      setBookingEdits((current) => ({
+        ...current,
+        [booking._id]: buildBookingFormState(booking),
+      }));
+      setCreateState({
+        title: "",
+        description: "",
+        startsAt: "",
+        endsAt: "",
+      });
+    } catch (createError) {
+      setError(
+        createError instanceof Error
+          ? createError.message
+          : "Unable to create booking",
+      );
+    }
+  };
+
+  const handleEdit = (
+    bookingId: string,
+    field: keyof BookingFormState,
+    value: string,
+  ) => {
+    setBookingEdits((current) => ({
+      ...current,
+      [bookingId]: {
+        ...current[bookingId],
+        [field]: value,
+      },
+    }));
+  };
+
+  const handleSave = async (bookingId: string) => {
+    setError(null);
+    const editState = bookingEdits[bookingId];
+    const validationError = validateBookingFormState(editState);
+
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
+    try {
+      const updatedBooking = await bookingService.update(bookingId, editState);
+      setBookings((current) =>
+        current.map((booking) =>
+          booking._id === bookingId ? updatedBooking : booking,
+        ),
+      );
+      setBookingEdits((current) => ({
+        ...current,
+        [bookingId]: buildBookingFormState(updatedBooking),
+      }));
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : "Unable to update booking",
+      );
+    }
+  };
+
+  const handleDelete = async (bookingId: string) => {
+    try {
+      await bookingService.delete(bookingId);
+      setBookings((current) =>
+        current.filter((booking) => booking._id !== bookingId),
+      );
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error
+          ? deleteError.message
+          : "Unable to delete booking",
+      );
+    }
+  };
+
+  if (!isFeatureEnabled("scheduling")) {
+    return (
+      <StatusPanel
+        title="Scheduling disabled"
+        message="This page is hidden by the organization feature flags."
+      />
+    );
+  }
+
+  if (loading) {
+    return (
+      <StatusPanel
+        title="Loading bookings"
+        message="Fetching schedule items."
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        description="Manage simple shared bookings with conflict prevention on the API."
+        title="Bookings"
+      />
+      <section className="grid gap-6 lg:grid-cols-[0.85fr_1.15fr]">
+        <form
+          className="rounded-3xl bg-white p-6 shadow-sm"
+          onSubmit={handleCreate}
+        >
+          <h2 className="text-xl font-semibold text-ink">Create booking</h2>
+          <div className="mt-4 space-y-4">
+            <input
+              className="w-full rounded-2xl border border-slate-200 px-4 py-3"
+              onChange={(event) =>
+                setCreateState((current) => ({
+                  ...current,
+                  title: event.target.value,
+                }))
+              }
+              placeholder="Booking title"
+              value={createState.title}
+            />
+            <textarea
+              className="min-h-28 w-full rounded-2xl border border-slate-200 px-4 py-3"
+              onChange={(event) =>
+                setCreateState((current) => ({
+                  ...current,
+                  description: event.target.value,
+                }))
+              }
+              placeholder="Booking description"
+              value={createState.description}
+            />
+            <input
+              className="w-full rounded-2xl border border-slate-200 px-4 py-3"
+              onChange={(event) =>
+                setCreateState((current) => ({
+                  ...current,
+                  startsAt: event.target.value,
+                }))
+              }
+              type="datetime-local"
+              value={createState.startsAt}
+            />
+            <input
+              className="w-full rounded-2xl border border-slate-200 px-4 py-3"
+              onChange={(event) =>
+                setCreateState((current) => ({
+                  ...current,
+                  endsAt: event.target.value,
+                }))
+              }
+              type="datetime-local"
+              value={createState.endsAt}
+            />
+            {error ? <p className="text-sm text-danger">{error}</p> : null}
+            <button
+              className="rounded-2xl bg-ink px-4 py-3 font-medium text-white"
+              type="submit"
+            >
+              Create booking
+            </button>
+          </div>
+        </form>
+        <div className="space-y-4">
+          {bookings.length ? (
+            bookings.map((booking) => {
+              const canEdit = canEditBooking(user, booking);
+              const formState = bookingEdits[booking._id];
+
+              return (
+                <article
+                  className="rounded-3xl bg-white p-6 shadow-sm"
+                  key={booking._id}
+                >
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <input
+                      className="rounded-2xl border border-slate-200 px-4 py-3 disabled:bg-slate-100 md:col-span-2"
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        handleEdit(booking._id, "title", event.target.value)
+                      }
+                      value={formState?.title ?? booking.title}
+                    />
+                    <textarea
+                      className="min-h-24 rounded-2xl border border-slate-200 px-4 py-3 disabled:bg-slate-100 md:col-span-2"
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        handleEdit(
+                          booking._id,
+                          "description",
+                          event.target.value,
+                        )
+                      }
+                      value={formState?.description ?? booking.description}
+                    />
+                    <input
+                      className="rounded-2xl border border-slate-200 px-4 py-3 disabled:bg-slate-100"
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        handleEdit(booking._id, "startsAt", event.target.value)
+                      }
+                      type="datetime-local"
+                      value={
+                        formState?.startsAt ??
+                        formatDateTimeInput(booking.startsAt)
+                      }
+                    />
+                    <input
+                      className="rounded-2xl border border-slate-200 px-4 py-3 disabled:bg-slate-100"
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        handleEdit(booking._id, "endsAt", event.target.value)
+                      }
+                      type="datetime-local"
+                      value={
+                        formState?.endsAt ?? formatDateTimeInput(booking.endsAt)
+                      }
+                    />
+                  </div>
+                  <div className="mt-4 flex flex-wrap gap-3">
+                    <button
+                      className="rounded-full bg-ink px-4 py-2 text-sm font-medium text-white disabled:bg-slate-300"
+                      disabled={!canEdit}
+                      onClick={() => void handleSave(booking._id)}
+                      type="button"
+                    >
+                      Save
+                    </button>
+                    {canDeleteResources(user) ? (
+                      <button
+                        className="rounded-full bg-rose-50 px-4 py-2 text-sm font-medium text-danger"
+                        onClick={() => void handleDelete(booking._id)}
+                        type="button"
+                      >
+                        Delete
+                      </button>
+                    ) : null}
+                  </div>
+                </article>
+              );
+            })
+          ) : (
+            <StatusPanel
+              title="No bookings"
+              message="Add the first scheduling entry for this organization."
+            />
+          )}
+        </div>
+      </section>
+    </div>
+  );
+};
