@@ -5,7 +5,9 @@ services:
       - mongo_data:/data/db
 
   backend:
-    build: ./server
+    build:
+      context: .
+      dockerfile: server/Dockerfile
     environment:
       MONGODB_URI: mongodb://mongo:27017/workspacehub
       JWT_SECRET: ${JWT_SECRET}
@@ -16,7 +18,9 @@ services:
       - mongo
 
   frontend:
-    build: ./client
+    build:
+      context: .
+      dockerfile: client/Dockerfile
 
   caddy:
     image: caddy:2-alpine
