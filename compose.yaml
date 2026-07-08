@@ -1,0 +1,38 @@
+services:
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo_data:/data/db
+
+  backend:
+    build: ./server
+    environment:
+      MONGODB_URI: mongodb://mongo:27017/workspacehub
+      JWT_SECRET: ${JWT_SECRET}
+      CLIENT_ORIGIN: ${CLIENT_ORIGIN}
+      PORT: 3000
+      NODE_ENV: production
+    depends_on:
+      - mongo
+
+  frontend:
+    build: ./client
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS}
+    ports:
+      - "127.0.0.1:8081:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - frontend
+
+volumes:
+  mongo_data:
+  caddy_data:
+  caddy_config:

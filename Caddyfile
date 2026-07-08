@@ -1,0 +1,4 @@
+{$SITE_ADDRESS} {
+    reverse_proxy /api/* backend:3000
+    reverse_proxy frontend:80
+}
